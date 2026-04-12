@@ -22,6 +22,7 @@ A lightweight and Selenium-free Python API client for Naukri.com, designed to he
 | Recommended jobs feed | ✅ Working |
 | `nkparam` token harvester (Selenium utility) | ✅ Working |
 | Job search (`/jobapi/v3/search`) | 🚧 Under development |
+| OTP login/MFA | 🚧 Under development |
 | One-click job apply | 🚧 Under development |
 
 > **No Selenium required** for features 1–4. The Selenium script is only needed as a helper to harvest fresh `nkparam` tokens for the search endpoint.
