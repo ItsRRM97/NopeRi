@@ -26,7 +26,7 @@ A lightweight and Selenium-free Python API client for Naukri.com, designed to he
 | Job details  (`jobapi/v1/job/`) | ✅ Working |
 | One-click job apply | ✅ Working |
 | Job questionnaire while applying| ✅ Working Partially (harcoded answer) |
-| OTP login/MFA | 🚧 Under development |
+| OTP login/MFA | ✅ Working |
 
 
 > **Updated on April 13 2026**  
@@ -402,6 +402,7 @@ This project is intended for personal automation of your **own** Naukri account.
 
 ## 🤝 Contributing
 
-    Pull requests are welcome!
-    If you can help implement or improve OTP/MFA login automation, feel free to open an issue or PR  this is the main remaining piece for a fully seamless client.
+Pull requests are welcome!
+OTP/MFA login is now fully supported. The main area that could use help is **refactoring and cleanup** — improving code structure and formatting without breaking existing functionality.
+
 ---
