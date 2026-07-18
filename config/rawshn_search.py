@@ -1,0 +1,66 @@
+"""Rawshn PM search defaults for NopeRi apply_agent (USE_RAWSHN_CONFIG=1)."""
+
+import os
+
+# City priority: Hyderabad first, then Pune, then Bangalore (Naukri location labels)
+CITY_ORDER = ["Hyderabad", "Pune", "Bangalore"]
+
+PM_KEYWORDS = [
+    "Product Manager",
+    "Senior Product Manager",
+    "AI Product Manager",
+    "Technical Product Manager",
+    "Associate Product Manager",
+    "Product Management Specialist",
+    "Product Owner",
+    "Growth Product Manager",
+    "Implementation Product Manager",
+    "Platform Product Manager",
+]
+
+# Legacy flat list (title x location); apply_agent uses nested sweep instead.
+BQUERIES = [
+    {"keyword": keyword, "location": city}
+    for keyword in PM_KEYWORDS
+    for city in CITY_ORDER
+]
+
+# Sweep order in apply_agent: titles -> location -> experience -> job age -> pages
+# Skip exp=1: almost no PM listings ask for 1 YOE.
+# Override: RAWSHN_EXPERIENCE_LEVELS=4,3,2 (comma-separated integers)
+_exp_override = os.getenv("RAWSHN_EXPERIENCE_LEVELS", "").strip()
+if _exp_override:
+    EXPERIENCE_LEVELS = [int(x.strip()) for x in _exp_override.split(",") if x.strip()]
+else:
+    EXPERIENCE_LEVELS = [4, 3, 2, 5, 6]
+
+# Adaptive pagination: keep requesting pages while Naukri returns a full page
+# (RESULTS_PER_PAGE), stop on a short/empty page, all-duplicate page, or missing pageNo (400).
+# RAWSHN_PAGES = floor/ceiling seed for round 1 (also used when raising depth per round).
+# RAWSHN_MAX_PAGES = hard cap per title×city×exp×age combo (default 6).
+# RAWSHN_STOP_ON_ZERO_NEW = stop paging when a full page has 0 new jobs (default on).
+RESULTS_PER_PAGE = int(os.getenv("RAWSHN_RESULTS_PER_PAGE", "20"))
+PAGES = int(os.getenv("RAWSHN_PAGES", "3"))
+MAX_PAGES_PER_QUERY = int(os.getenv("RAWSHN_MAX_PAGES", "6"))
+STOP_ON_ZERO_NEW = os.getenv("RAWSHN_STOP_ON_ZERO_NEW", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+)
+
+# Search rounds: each round re-fetches with +1 page depth until target or cap
+MAX_SEARCH_ROUNDS = int(os.getenv("RAWSHN_SEARCH_ROUNDS", "4"))
+
+# Days since posted (freshness). Override: RAWSHN_JOB_AGE=5 forces single age.
+# Override list: RAWSHN_JOB_AGE_LEVELS=3,4,5,6,7
+_job_age_override = os.getenv("RAWSHN_JOB_AGE", "").strip()
+_job_age_levels_override = os.getenv("RAWSHN_JOB_AGE_LEVELS", "").strip()
+if _job_age_override:
+    JOB_AGE = int(_job_age_override)
+    JOB_AGE_LEVELS = [JOB_AGE]
+elif _job_age_levels_override:
+    JOB_AGE_LEVELS = [int(x.strip()) for x in _job_age_levels_override.split(",") if x.strip()]
+    JOB_AGE = JOB_AGE_LEVELS[0]
+else:
+    JOB_AGE_LEVELS = [3, 4, 5, 6, 7]
+    JOB_AGE = JOB_AGE_LEVELS[0]

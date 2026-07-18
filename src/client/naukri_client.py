@@ -93,6 +93,32 @@ OTP_HEADERS = {
   "x-requested-with": "XMLHttpRequest"
 }
 
+
+def _cookies_dict(session) -> dict:
+    """Normalize httpcloak or requests session cookies to a name-value dict."""
+    if hasattr(session, "get_cookies"):
+        cookies = session.get_cookies()
+        if isinstance(cookies, list):
+            return {c.name: c.value for c in cookies if getattr(c, "name", None)}
+    cookies = session.cookies
+    if hasattr(cookies, "get_dict"):
+        return cookies.get_dict()
+    if isinstance(cookies, dict):
+        return cookies
+    if isinstance(cookies, list):
+        return {c.name: c.value for c in cookies if getattr(c, "name", None)}
+    return {}
+
+
+def _get_cookie(session, name: str):
+    """Return a cookie value by name from an httpcloak or requests session."""
+    if hasattr(session, "get_cookie"):
+        cookie = session.get_cookie(name)
+        if cookie is not None:
+            return cookie.value
+    return _cookies_dict(session).get(name)
+
+
 # ---------------------------------------------------------------------------
 # Client
 # ---------------------------------------------------------------------------
@@ -138,11 +164,11 @@ class NaukriLoginClient:
             print(res.content)
             raise NaukriAuthError("Login failed")
 
-        token = self.session.cookies.get("nauk_at")
+        token = _get_cookie(self.session, "nauk_at")
         if not token:
             raise NaukriAuthError("No token")
 
-        self.naukri_session = NaukriSession(token, self.session.cookies)
+        self.naukri_session = NaukriSession(token, _cookies_dict(self.session))
 
         try:
             self.cache["form_key"] = self.get_form_key2()
@@ -198,7 +224,7 @@ class NaukriLoginClient:
             logger.error("OTP verification failed: %s %s", res.status_code, res.text)
             raise NaukriAuthError(f"OTP verification failed ({res.status_code})")
 
-        token = self.session.cookies.get("nauk_at")
+        token = _get_cookie(self.session, "nauk_at")
         if not token:
             # Some flows return the token in the JSON body instead
             try:
@@ -209,7 +235,7 @@ class NaukriLoginClient:
         if not token:
             raise NaukriAuthError("OTP verified but no auth token received")
 
-        self.naukri_session = NaukriSession(token, self.session.cookies)
+        self.naukri_session = NaukriSession(token, _cookies_dict(self.session))
 
         try:
             self.cache["form_key"] = self.get_form_key2()

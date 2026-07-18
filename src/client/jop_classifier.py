@@ -107,7 +107,11 @@ class JobFilterPipeline2:
         batch_size=50,
     ):
         self.api_key           = openai_api_key
-        self.url               = "https://api.openai.com/v1/chat/completions"
+        base = os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1/chat/completions")
+        if not base.rstrip("/").endswith("chat/completions"):
+            base = base.rstrip("/") + "/chat/completions"
+        self.url               = base
+        self.model             = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
         self.cache_file        = cache_file
         self.daily_apply_limit = daily_apply_limit
         self.min_apply_score   = min_apply_score
@@ -484,7 +488,7 @@ Jobs:
                     "Content-Type":  "application/json",
                 },
                 json={
-                    "model":       "gpt-4o-mini",
+                    "model":       self.model,
                     "messages":    [{"role": "user", "content": prompt2}],
                     "temperature": 0.2,
                 },

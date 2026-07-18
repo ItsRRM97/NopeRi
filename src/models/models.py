@@ -35,6 +35,8 @@ class Job:
     apply_link: str
     description: str = ""
     tags: list = field(default_factory=list)
+    # True = Naukri Easy Apply, False = external redirect, None = unknown from search
+    easy_apply: bool | None = None
 
 @dataclass
 class ProfileUpdateResult:

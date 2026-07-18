@@ -1,13 +1,24 @@
 import logging
+import os
+import time
 from datetime import datetime
 
 from src.models.models import Job
+from src.client.apply_mode import (
+    classify_search_apply_mode,
+    external_url_from_apply_result,
+    external_url_from_job_details,
+    is_external_job_details,
+)
 from src.client.naukri_client import NaukriLoginClient
-from src.exceptions.exceptions import NaukriAuthError, NaukriParseError
+from src.exceptions.exceptions import NaukriAuthError, NaukriParseError, NaukriRecaptchaError
 from src.utils.request_helper import with_exponential_retry
 from src.utils.nkparam_generator import generate_nkparam
 from src.config.constants import RECOMMENDED_JOBS_URL, JOB_SEARCH_URL, APPLY_JOB_URL
 import json
+
+from config.profile_loader import load_application_profile
+from src.client.questionnaire import build_smart_answers
 
 
 logger = logging.getLogger(__name__)
@@ -114,10 +125,16 @@ class NaukriJobClient:
         self.pool_idx = 0
         self.use_pool = use_pool
 
+        # Reuse one generated nkparam for several minutes (reduces bot signals).
+        self._nkparam_cache: str | None = None
+        self._nkparam_cached_at: float = 0.0
+        self._nkparam_ttl_s = int(os.getenv("NAUKRI_NKPARAM_TTL", "300"))
+
         # Seed pool with one pre-captured token as a baseline fallback.
         self.pool = [
             "sa9chfJkrXEpn3Zt7rAPaAOb6gAWNSFzzmPQEc6tLSMzytUGPxrGDqiKJyjvBAHGIYPhbDRBDHMad071ZRZlZA=="
         ]
+        self._job_details_cache: dict[str, dict] = {}
 
     # ----------------------------------------------------------------------------------
     # Internal helpers
@@ -144,6 +161,7 @@ class NaukriJobClient:
                 if raw.get("tagsAndSkills")
                 else []
             ),
+            easy_apply=classify_search_apply_mode(raw),
         )
 
     def _cluster_dates(self) -> dict:
@@ -206,12 +224,17 @@ class NaukriJobClient:
         return formatted
 
     def _get_nkparam(self) -> str:
-        # Returns a token from the pool (pool mode) or generates a fresh one.
+        # Returns a token from the pool (pool mode) or generates/caches one.
         if self.use_pool:
             token = self.pool[self.pool_idx % len(self.pool)]
             self.pool_idx += 1
             return token
-        return generate_nkparam("srp")
+        now = time.time()
+        if self._nkparam_cache and (now - self._nkparam_cached_at) < self._nkparam_ttl_s:
+            return self._nkparam_cache
+        self._nkparam_cache = generate_nkparam("srp")
+        self._nkparam_cached_at = now
+        return self._nkparam_cache
 
     def _search_headers(self) -> dict:
         # Builds headers for the search endpoint. Uses non-auth base headers
@@ -281,10 +304,33 @@ class NaukriJobClient:
         except Exception:
             raise NaukriParseError(f"Invalid JSON response: {res.text}")
 
+    def get_job_details_cached(self, job_id: str, sid: str = "") -> dict:
+        if job_id not in self._job_details_cache:
+            self._job_details_cache[job_id] = self.get_job_details(job_id, sid)
+        return self._job_details_cache[job_id]
+
     def is_external_apply(self, job_id: str, sid: str = "") -> bool:
         # Returns True if the job redirects to an external company URL for apply.
-        data = self.get_job_details(job_id, sid)
-        return data.get("job", {}).get("responseManager") == "companyUrl"
+        data = self.get_job_details_cached(job_id, sid)
+        return is_external_job_details(data)
+
+    def get_external_apply_url(self, job_id: str, sid: str = "") -> str | None:
+        """Best-effort company apply URL from job details (falls back to Naukri listing)."""
+        data = self.get_job_details_cached(job_id, sid)
+        return external_url_from_job_details(data, job_id)
+
+    def external_url_from_apply_response(self, apply_result: dict, job_id: str) -> str | None:
+        """Detect external apply from apply-workflow response (no extra details call)."""
+        job_result = (apply_result.get("jobs") or [{}])[0]
+        url = external_url_from_apply_result(job_result)
+        if url:
+            return url
+        if job_result.get("responseManager") == "companyUrl":
+            try:
+                return self.get_external_apply_url(job_id)
+            except Exception:
+                return f"https://www.naukri.com/job-listings-{job_id}"
+        return None
 
     # ----------------------------------------------------------------------------------
     # Apply job
@@ -367,88 +413,33 @@ class NaukriJobClient:
         source="recommended",
     ) -> dict:
 
-        # Static profile values used when generating questionnaire answers.
-        # Update these to match the candidate's actual profile.
-        PROFILE = {
-            "current_ctc":  "5",
-            "expected_ctc": "7",
-            "exp_total":    "2",
-            "exp_node":     "2",
-            "exp_python":   "1",
-            "notice_days":  30,
-            "skills": [
-                "node", "docker", "kubernetes",
-                "aws", "ci/cd", "jenkins", "terraform",
-            ],
-        }
+        profile = load_application_profile()
+        job_details = None
+        try:
+            job_details = self.get_job_details(job.job_id, sid)
+        except Exception as exc:
+            logger.warning("Could not fetch JD for questionnaire: %s", exc)
 
-        def build_smart_answers(questionnaire: list, profile: dict) -> dict:
-            answers = {}
-
-            def pick_yes(options: dict) -> str:
-                # Prefer any option whose label contains "yes".
-                for k, v in options.items():
-                    if "yes" in v.lower():
-                        return k
-                return list(options.keys())[0]
-
-            def pick_notice(options: dict, notice_days: int) -> str:
-                # Match the closest notice period bucket to notice_days.
-                for k, v in options.items():
-                    val = v.lower()
-                    if "15" in val and notice_days <= 15:
-                        return k
-                    if "1 month" in val and notice_days <= 30:
-                        return k
-                    if "2 month" in val and notice_days <= 60:
-                        return k
-                return list(options.keys())[0]
-
-            for q in questionnaire:
-                qid   = q["questionId"]
-                qtext = (q.get("questionName") or "").lower()
-                qtype = (q.get("questionType") or "").lower()
-                options = q.get("answerOption") or {}
-
-                if qtype == "text box":
-                    if "current ctc" in qtext:
-                        ans = profile["current_ctc"]
-                    elif "expected ctc" in qtext:
-                        ans = profile["expected_ctc"]
-                    elif "experience" in qtext:
-                        if "node" in qtext:
-                            ans = profile["exp_node"]
-                        elif "python" in qtext:
-                            ans = profile["exp_python"]
-                        else:
-                            ans = profile["exp_total"]
-                    elif "notice" in qtext:
-                        ans = str(profile["notice_days"])
-                    else:
-                        ans = "1"
-
-                else:
-                    if options:
-                        if "notice" in qtext:
-                            key = pick_notice(options, profile["notice_days"])
-                        elif any(skill in qtext for skill in profile["skills"]):
-                            key = pick_yes(options)
-                        elif any(x in qtext for x in ["do you", "have you", "experience"]):
-                            key = pick_yes(options)
-                        else:
-                            key = list(options.keys())[0]
-
-                        # Option-type answers must always be wrapped in a list.
-                        ans = [key]
-                    else:
-                        ans = "1"
-
-                answers[qid] = ans
-
-            return answers
-
-        answers = build_smart_answers(questionnaire, PROFILE)
+        answers, qa_log, low_confidence = build_smart_answers(
+            questionnaire,
+            profile=profile,
+            job_details=job_details,
+        )
         logger.debug("Generated answers: %s", answers)
+        logger.debug("Q&A log: %s", qa_log)
+
+        if low_confidence:
+            logger.warning(
+                "Low-confidence questionnaire answers for job_id=%s; caller may skip apply",
+                job.job_id,
+            )
+            return {
+                "success": False,
+                "skipped": True,
+                "reason": "low_confidence_questionnaire",
+                "qa_log": qa_log,
+                "answers": answers,
+            }
 
         apply_src, logstr_template = APPLY_SRC_MAP.get(source, APPLY_SRC_MAP["recommended"])
         logstr = logstr_template.format(sid=sid)
@@ -480,12 +471,14 @@ class NaukriJobClient:
 
         if not res.ok:
             logger.debug("Apply failed: %s", res.text)
-            return {"success": False, "error": res.text}
+            return {"success": False, "error": res.text, "qa_log": qa_log}
 
         try:
-            return res.json()
+            payload = res.json()
+            payload["qa_log"] = qa_log
+            return payload
         except Exception:
-            return {"success": False, "error": "Invalid JSON response"}
+            return {"success": False, "error": "Invalid JSON response", "qa_log": qa_log}
 
     # ----------------------------------------------------------------------------------
     # Recommended jobs
@@ -544,16 +537,48 @@ class NaukriJobClient:
             "latLong":        lat_long,
         }
 
-        res = self._session.get(url, headers=self._search_headers(), params=params)
+        recaptcha_backoff = (30, 60, 120)
+        res = None
+        for attempt in range(len(recaptcha_backoff) + 1):
+            res = self._session.get(url, headers=self._search_headers(), params=params)
 
-        if res.status_code == 403:
-            raise NaukriAuthError("403 Forbidden — nkparam token likely expired")
+            if res.status_code == 403:
+                raise NaukriAuthError("403 Forbidden — nkparam token likely expired")
 
-        if res.status_code == 406:
-            logger.debug("406 Validation error: %s", res.text)
+            if res.status_code == 406:
+                if attempt < len(recaptcha_backoff):
+                    wait_s = recaptcha_backoff[attempt]
+                    logger.warning(
+                        "406 recaptcha on search; waiting %ss then retry (%d/%d)",
+                        wait_s,
+                        attempt + 1,
+                        len(recaptcha_backoff),
+                    )
+                    time.sleep(wait_s)
+                    self._nkparam_cache = None
+                    continue
+                logger.debug("406 Validation error after retries: %s", res.text)
+                # Do NOT return [] here: callers would mistake the recaptcha wall
+                # for an empty page and burn the variation as "tried".
+                raise NaukriRecaptchaError()
+
+            break
+
+        if res is None:
             return []
 
         if not res.ok:
+            # Naukri returns 400 when pageNo is past the last page for that query.
+            # Treat as empty (callers stop paging) instead of a hard PARSE ERROR.
+            if res.status_code == 400 and (
+                "pageNo" in res.text or "doesn't exists" in res.text or "does not exist" in res.text
+            ):
+                logger.debug(
+                    "Search pageNo past end for keyword=%r page=%d (treating as empty)",
+                    keyword,
+                    page,
+                )
+                return []
             raise NaukriParseError(f"Search failed: {res.status_code} — {res.text}")
 
         data     = res.json()

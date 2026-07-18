@@ -31,3 +31,13 @@ dist/
 # Coverage (optional)
 .coverage
 htmlcov/
+
+# Local run state / personal apply data (do not push)
+applied_jobs.csv
+external_jobs.csv
+external_jobs.jsonl
+questionnaire_review.jsonl
+score_cache.json
+search_variation_state.json
+runs/
+*.pid

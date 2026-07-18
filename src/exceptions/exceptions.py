@@ -33,6 +33,13 @@ class NaukriParseError(NaukriClientError):
         super().__init__(msg)
 
 
+class NaukriRecaptchaError(NaukriClientError):
+    """Naukri search API returned 406 recaptcha wall after all retries."""
+
+    def __init__(self, message="Recaptcha wall on search (406 after retries)"):
+        super().__init__(f"[RECAPTCHA] {message}")
+
+
 class NaukriUploadError(NaukriClientError):
     """Resume / file upload failures."""
 
