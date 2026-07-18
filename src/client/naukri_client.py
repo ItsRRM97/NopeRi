@@ -114,8 +114,13 @@ def _get_cookie(session, name: str):
     """Return a cookie value by name from an httpcloak or requests session."""
     if hasattr(session, "get_cookie"):
         cookie = session.get_cookie(name)
-        if cookie is not None:
-            return cookie.value
+        if cookie is None:
+            pass
+        elif isinstance(cookie, str):
+            return cookie
+        else:
+            # Cookie-like object (requests) or other value
+            return getattr(cookie, "value", cookie)
     return _cookies_dict(session).get(name)
 
 
